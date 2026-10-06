@@ -994,483 +994,554 @@ save_plot(p_final3, "alpha_diversity_dep_anx_3grp", "02_diversity", width = 8, h
 cat("\n=== 03_alpha_diversity_plot.R 完成 ===\n")
 
 
+# =============================================================================
+# 14. Beta diversity: Bray-Curtis and Aitchison distances
+#     Adapted from R/03_metagenomics_diversity.R for mt_ibd_282
+# =============================================================================
 
+suppressPackageStartupMessages({
+  library(vegan)
+  library(ggpubr)
+})
 
-library(ggplot2)
-library(vegan)
-library(dplyr)
-library(patchwork)
-library(ggpubr)
+beta_dir <- file.path("results", "02_diversity")
+dir.create(beta_dir, recursive = TRUE, showWarnings = FALSE)
 
-perm_dep <- load_intermediate("permanova_results_dep.rds")
-perm_anx <- load_intermediate("permanova_results_anx.rds")
+beta_covariates <- c("site", "Age", "Sex", "BMI", "hPDI")
+beta_required <- c("PHQ9_sum", "GAD7_sum", beta_covariates)
 
-dm <- load_intermediate("distance_matrices.rds")
-bc_complete <- dm$bc_complete
-ait_dist    <- dm$ait_dist
-cohort      <- dm$cohort
-
-# 从 tibble 中提取指定距离+变量的 R² 和 P 值
-extract_perm <- function(tbl, dist, var) {
-  row <- tbl %>% filter(Distance == dist, Variable == var)
-  list(r2 = row$R2, pval = row$P)
-}
-
-
-# =========================
-# 半封闭主题
-# =========================
-theme_half_open <- function() {
-  theme_classic(base_size = 18) +
-    theme(
-      panel.background  = element_rect(fill = "white", color = NA),
-      plot.background   = element_rect(fill = "white", color = NA),
-      panel.border      = element_blank(),
-      axis.line.x       = element_line(color = "black", linewidth = 1.0),
-      axis.line.y       = element_line(color = "black", linewidth = 1.0),
-      axis.ticks        = element_line(color = "black", linewidth = 1.0),
-      axis.ticks.length = unit(0.2, "cm"),
-      axis.text         = element_text(color = "black", size = 16),
-      axis.title        = element_text(color = "black", size = 20, face = "bold"),
-      plot.title        = element_text(size = 20, face = "bold", hjust = 0.5),
-      plot.subtitle     = element_text(size = 14, hjust = 0.5, color = "grey30"),
-      legend.title      = element_text(size = 16, face = "bold"),
-      legend.text       = element_text(size = 15),
-      legend.background = element_rect(fill = "white", color = NA),
-      legend.key        = element_rect(fill = "white", color = NA),
-      panel.grid        = element_blank()
-    )
-}
-
-# =========================
-# 配色（与之前统一）
-# =========================
-colors_dep <- c("Non-depressed" = "#2F9B85", "Depressed" = "#D95F5F")
-colors_anx <- c("Non-anxious" = "#6FA8DC", "Anxious" = "#E6862D")
-
-# =========================
-# PCoA 绘图函数
-# =========================
-plot_pcoa <- function(dist_obj, sample_data, group_var, group_labels,
-                      fill_colors, title_text, r2, pval) {
-
-  pcoa_res <- cmdscale(dist_obj, k = 2, eig = TRUE)
-  eig_pct <- round(100 * pcoa_res$eig[1:2] / sum(pcoa_res$eig[pcoa_res$eig > 0]), 1)
-
-  df <- tibble(
-    PC1   = pcoa_res$points[, 1],
-    PC2   = pcoa_res$points[, 2],
-    Group = factor(sample_data[[group_var]],
-                   levels = names(group_labels),
-                   labels = group_labels)
-  )
-
-  p_label <- ifelse(pval < 0.001, "P < 0.001", sprintf("P = %.3f", pval))
-
-  ggplot(df, aes(x = PC1, y = PC2, color = Group, fill = Group)) +
-    geom_point(size = 2.5, alpha = 0.8) +
-    stat_ellipse(level = 0.95, geom = "polygon", alpha = 0.1,
-                 linewidth = 1, linetype = "solid") +
-    scale_color_manual(values = fill_colors) +
-    scale_fill_manual(values = fill_colors) +
-    labs(
-      x = sprintf("PCoA1 (%.1f%%)", eig_pct[1]),
-      y = sprintf("PCoA2 (%.1f%%)", eig_pct[2]),
-      title = title_text,
-      subtitle = sprintf("PERMANOVA: R² = %.4f, %s", r2, p_label)
-    ) +
-    theme_half_open() +
-    theme(
-      panel.border = element_rect(colour = "black", fill = NA, linewidth = 1.0),
-      axis.line = element_blank(),
-      legend.position = "right"
-    )
-}
-
-# =========================
-# Beta dispersion 箱线图（distance to centroid）
-# =========================
-plot_beta_boxplot <- function(dist_obj, sample_data, group_var, group_labels,
-                              fill_colors, title_text) {
-
-  groups <- factor(sample_data[[group_var]],
-                   levels = names(group_labels),
-                   labels = group_labels)
-  names(groups) <- rownames(sample_data)
-
-  shared <- intersect(names(groups), labels(dist_obj))
-  dist_sub <- as.dist(as.matrix(dist_obj)[shared, shared])
-  groups   <- groups[shared]
-
-  bd <- betadisper(dist_sub, groups)
-
-  df <- data.frame(
-    Group    = bd$group,
-    Distance = bd$distances
-  )
-
-  comps <- combn(levels(df$Group), 2, simplify = FALSE)
-
-  ggplot(df, aes(x = Group, y = Distance, fill = Group)) +
-    geom_boxplot(alpha = 0.7, outlier.size = 0.5, width = 0.6) +
-    stat_compare_means(comparisons = comps, method = "wilcox.test",
-                       label = "p.signif", size = 4, step.increase = 0.08) +
-    scale_fill_manual(values = fill_colors) +
-    labs(x = NULL, y = "Distance to centroid", title = title_text) +
-    theme_half_open() +
-    theme(
-      panel.border = element_rect(colour = "black", fill = NA, linewidth = 1.0),
-      axis.line = element_blank(),
-      legend.position = "none",
-      axis.text.x = element_text(size = 13, angle = 45, hjust = 1, vjust = 1)
-    )
-}
-
-# =========================
-# PERMANOVA 结果提取
-# =========================
-pm_dep_bc  <- extract_perm(perm_dep, "Bray-Curtis", "PHQ9_sum")
-pm_dep_ait <- extract_perm(perm_dep, "Aitchison", "PHQ9_sum")
-pm_anx_bc  <- extract_perm(perm_anx, "Bray-Curtis", "GAD7_sum")
-pm_anx_ait <- extract_perm(perm_anx, "Aitchison", "GAD7_sum")
-
-# =========================
-# 两组标签 & 配色
-# =========================
-dep_labels <- c("0" = "Non-depressed", "1" = "Depressed")
-anx_labels <- c("0" = "Non-anxious", "1" = "Anxious")
-
-# =========================
-# 三组标签 & 配色 (severity)
-# PHQ-9: 0-4 None, 5-9 Mild, >=10 Moderate+
-# GAD-7: 0-4 None, 5-9 Mild, >=10 Moderate+
-# =========================
-cohort$dep_sev3 <- cut(cohort$PHQ9_sum,
-                       breaks = c(-Inf, 4, 9, Inf),
-                       labels = c("None", "Mild", "Moderate+"))
-cohort$anx_sev3 <- cut(cohort$GAD7_sum,
-                       breaks = c(-Inf, 4, 9, Inf),
-                       labels = c("None", "Mild", "Moderate+"))
-
-dep3_labels <- c("None" = "None", "Mild" = "Mild", "Moderate+" = "Moderate+")
-anx3_labels <- c("None" = "None", "Mild" = "Mild", "Moderate+" = "Moderate+")
-
-colors_dep3 <- c("None" = "#2F9B85", "Mild" = "#F5A623", "Moderate+" = "#D95F5F")
-colors_anx3 <- c("None" = "#6FA8DC", "Mild" = "#F5A623", "Moderate+" = "#E6862D")
-
-# =====================================================================
-# A. 两组: PCoA + Within/Between boxplot
-# =====================================================================
-
-# --- Depression (Bray-Curtis) ---
-p_pcoa_dep_bc <- plot_pcoa(bc_complete, cohort, "PHQ9_bi10", dep_labels,
-                           colors_dep, "Bray-Curtis — Depression",
-                           pm_dep_bc$r2, pm_dep_bc$pval)
-p_box_dep_bc  <- plot_beta_boxplot(bc_complete, cohort, "PHQ9_bi10", dep_labels,
-                                       colors_dep, "Beta Dispersion")
-
-# --- Depression (Aitchison) ---
-p_pcoa_dep_ait <- plot_pcoa(ait_dist, cohort, "PHQ9_bi10", dep_labels,
-                            colors_dep, "Aitchison — Depression",
-                            pm_dep_ait$r2, pm_dep_ait$pval)
-p_box_dep_ait  <- plot_beta_boxplot(ait_dist, cohort, "PHQ9_bi10", dep_labels,
-                                        colors_dep, "Beta Dispersion")
-
-# --- Anxiety (Bray-Curtis) ---
-p_pcoa_anx_bc <- plot_pcoa(bc_complete, cohort, "GAD7_bi10", anx_labels,
-                           colors_anx, "Bray-Curtis — Anxiety",
-                           pm_anx_bc$r2, pm_anx_bc$pval)
-p_box_anx_bc  <- plot_beta_boxplot(bc_complete, cohort, "GAD7_bi10", anx_labels,
-                                       colors_anx, "Beta Dispersion")
-
-# --- Anxiety (Aitchison) ---
-p_pcoa_anx_ait <- plot_pcoa(ait_dist, cohort, "GAD7_bi10", anx_labels,
-                            colors_anx, "Aitchison — Anxiety",
-                            pm_anx_ait$r2, pm_anx_ait$pval)
-p_box_anx_ait  <- plot_beta_boxplot(ait_dist, cohort, "GAD7_bi10", anx_labels,
-                                        colors_anx, "Beta Dispersion")
-
-# 拼接: PCoA(宽) + boxplot(窄)
-p_2grp <- (p_pcoa_dep_bc | p_box_dep_bc | p_pcoa_dep_ait | p_box_dep_ait) /
-          (p_pcoa_anx_bc | p_box_anx_bc | p_pcoa_anx_ait | p_box_anx_ait) +
-  plot_layout(widths = rep(c(3, 1.5), 2)) +
-  plot_annotation(tag_levels = "A",
-                  title = "PCoA & Within/Between Distance — Binary Groups",
-                  theme = theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5)))
-
-print(p_2grp)
-ggsave("results/group_meeting/add/beta_pcoa_2group.pdf", p_2grp,
-       width = 28, height = 14)
-
-# =====================================================================
-# B. 三组 (severity): PCoA + Within/Between boxplot
-# =====================================================================
-
-# --- Depression severity (Bray-Curtis) ---
-p_pcoa_dep3_bc <- plot_pcoa(bc_complete, cohort, "dep_sev3", dep3_labels,
-                            colors_dep3, "Bray-Curtis — Depression Severity",
-                            pm_dep_bc$r2, pm_dep_bc$pval)
-p_box_dep3_bc  <- plot_beta_boxplot(bc_complete, cohort, "dep_sev3", dep3_labels,
-                                        colors_dep3, "Beta Dispersion")
-
-# --- Depression severity (Aitchison) ---
-p_pcoa_dep3_ait <- plot_pcoa(ait_dist, cohort, "dep_sev3", dep3_labels,
-                             colors_dep3, "Aitchison — Depression Severity",
-                             pm_dep_ait$r2, pm_dep_ait$pval)
-p_box_dep3_ait  <- plot_beta_boxplot(ait_dist, cohort, "dep_sev3", dep3_labels,
-                                         colors_dep3, "Beta Dispersion")
-
-# --- Anxiety severity (Bray-Curtis) ---
-p_pcoa_anx3_bc <- plot_pcoa(bc_complete, cohort, "anx_sev3", anx3_labels,
-                            colors_anx3, "Bray-Curtis — Anxiety Severity",
-                            pm_anx_bc$r2, pm_anx_bc$pval)
-p_box_anx3_bc  <- plot_beta_boxplot(bc_complete, cohort, "anx_sev3", anx3_labels,
-                                        colors_anx3, "Beta Dispersion")
-
-# --- Anxiety severity (Aitchison) ---
-p_pcoa_anx3_ait <- plot_pcoa(ait_dist, cohort, "anx_sev3", anx3_labels,
-                             colors_anx3, "Aitchison — Anxiety Severity",
-                             pm_anx_ait$r2, pm_anx_ait$pval)
-p_box_anx3_ait  <- plot_beta_boxplot(ait_dist, cohort, "anx_sev3", anx3_labels,
-                                         colors_anx3, "Beta Dispersion")
-
-p_3grp <- (p_pcoa_dep3_bc | p_box_dep3_bc | p_pcoa_dep3_ait | p_box_dep3_ait) /
-          (p_pcoa_anx3_bc | p_box_anx3_bc | p_pcoa_anx3_ait | p_box_anx3_ait) +
-  plot_layout(widths = rep(c(3, 1.5), 2)) +
-  plot_annotation(tag_levels = "A",
-                  title = "PCoA & Within/Between Distance — Severity Groups",
-                  theme = theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5)))
-
-print(p_3grp)
-ggsave("results/group_meeting/add/beta_pcoa_3group_severity.pdf", p_3grp,
-       width = 28, height = 14)
-
-###R2####
-library(tidyverse)
-
-# --- 加载数据 ---
-permanova_dep <- load_intermediate("permanova_results_dep.rds") %>%
-  mutate(Model = "Depression (PHQ-9)") %>%
-  filter(Variable != "GAD7_sum")
-
-permanova_anx <- load_intermediate("permanova_results_anx.rds") %>%
-  mutate(Model = "Anxiety (GAD-7)") %>%
-  filter(Variable != "PHQ9_sum")
-
-df_plot <- bind_rows(permanova_dep, permanova_anx) %>%
+cohort_beta <- as.data.frame(mt_ibd$sample_table) %>%
   mutate(
-    Variable_label = case_when(
-      Variable == "PHQ9_sum" ~ "PHQ-9",
-      Variable == "GAD7_sum" ~ "GAD-7",
-      Variable == "site"     ~ "Study site",
-      Variable == "Age"      ~ "Age",
-      Variable == "Sex"      ~ "Sex",
-      Variable == "BMI"      ~ "BMI",
-      Variable == "hPDI"     ~ "hPDI",
-      TRUE ~ Variable
+    site = factor(site),
+    Sex = factor(Sex),
+    PHQ9_bi10 = factor(
+      ifelse(PHQ9_sum >= 10, 1, 0),
+      levels = c(0, 1),
+      labels = c("Non-depressed", "Depressed")
     ),
-    Sig = case_when(
-      P < 0.001 ~ "***",
-      P < 0.01  ~ "**",
-      P < 0.05  ~ "*",
-      TRUE      ~ ""
+    GAD7_bi10 = factor(
+      ifelse(GAD7_sum >= 10, 1, 0),
+      levels = c(0, 1),
+      labels = c("Non-anxious", "Anxious")
     ),
-    R2_pct = R2 * 100
+    dep_sev3 = cut(
+      PHQ9_sum,
+      breaks = c(-Inf, 4, 9, Inf),
+      labels = c("Minimal", "Mild", "Moderate+")
+    ),
+    anx_sev3 = cut(
+      GAD7_sum,
+      breaks = c(-Inf, 4, 9, Inf),
+      labels = c("Minimal", "Mild", "Moderate+")
+    )
   )
 
-# Distance 顺序：Bray-Curtis 在左
-df_plot$Distance <- factor(df_plot$Distance, levels = c("Bray-Curtis", "Aitchison"))
-# Model 顺序
-df_plot$Model <- factor(df_plot$Model, levels = c("Anxiety (GAD-7)", "Depression (PHQ-9)"))
+complete_beta <- complete.cases(cohort_beta[, beta_required, drop = FALSE])
+cohort_beta <- cohort_beta[complete_beta, , drop = FALSE]
 
-# --- 按 Bray-Curtis 的 R2 排序 y 轴（每个 Model 独立排序）---
-# 取 Bray-Curtis 的 R2 作为排序依据
-bc_order <- df_plot %>%
-  filter(Distance == "Bray-Curtis") %>%
-  dplyr::select(Model, Variable_label, R2_pct)
+species_beta <- t(as.matrix(mt_ibd$otu_table))
+species_beta <- species_beta[rownames(cohort_beta), , drop = FALSE]
 
-# 创建排序用的 interaction variable，保证每个 facet 行独立
-df_plot <- df_plot %>%
-  left_join(bc_order %>% rename(R2_bc = R2_pct),
-            by = c("Model", "Variable_label")) %>%
-  mutate(facet_var = paste(Model, Variable_label, sep = "___"))
-
-# 按 Model + Bray-Curtis R2 排序
-ordered_levels <- df_plot %>%
-  distinct(Model, Variable_label, facet_var, R2_bc) %>%
-  arrange(Model, R2_bc) %>%
-  pull(facet_var)
-
-df_plot$facet_var <- factor(df_plot$facet_var, levels = ordered_levels)
-
-# --- Nature 配色 ---
-pal_nature <- c(
-  "GAD-7"       = "#E64B35",
-  "PHQ-9"       = "#E64B35",
-  "Study site"  = "#8491B4",
-  "Age"         = "#4DBBD5",
-  "Sex"         = "#00A087",
-  "BMI"         = "#3C5488",
-  "hPDI"        = "#F39B7F"
+stopifnot(
+  nrow(cohort_beta) == 282L,
+  identical(rownames(species_beta), rownames(cohort_beta)),
+  all(rowSums(species_beta) > 0)
 )
 
-# --- 画图 ---
-p <- ggplot(df_plot, aes(x = R2_pct, y = facet_var, fill = Variable_label)) +
-  geom_col(width = 0.65, show.legend = FALSE) +
-  geom_text(aes(label = Sig), hjust = -0.3, size = 4, fontface = "bold") +
-  facet_grid(Model ~ Distance, scales = "free") +
-  scale_fill_manual(values = pal_nature) +
-  scale_y_discrete(labels = function(x) sub("^.*___", "", x)) +   # 去掉 Model 前缀，只显示变量名
+cat("\n=== Beta-diversity input ===\n")
+cat(nrow(species_beta), "samples x", ncol(species_beta), "species\n")
+
+# --- 14a. Bray-Curtis distance ---
+bray_distance <- vegan::vegdist(species_beta, method = "bray")
+
+# --- 14b. Aitchison distance: half-minimum pseudocount followed by CLR ---
+half_minimum <- min(species_beta[species_beta > 0], na.rm = TRUE) / 2
+species_pseudocount <- species_beta + half_minimum
+species_clr <- log(species_pseudocount) - rowMeans(log(species_pseudocount))
+aitchison_distance <- stats::dist(species_clr, method = "euclidean")
+
+stopifnot(
+  identical(labels(bray_distance), rownames(cohort_beta)),
+  identical(labels(aitchison_distance), rownames(cohort_beta))
+)
+
+
+# =============================================================================
+# 15. Adjusted PERMANOVA with marginal effects
+# =============================================================================
+
+extract_adonis_table <- function(fit, distance_name, outcome, score_var) {
+  as.data.frame(fit) %>%
+    tibble::rownames_to_column("Variable") %>%
+    transmute(
+      Outcome = outcome,
+      Score_variable = score_var,
+      Distance = distance_name,
+      Variable,
+      Df,
+      SumOfSqs,
+      R2,
+      F_stat = F,
+      P = `Pr(>F)`
+    ) %>%
+    filter(!Variable %in% c("Residual", "Total"))
+}
+
+run_permanova <- function(distance_object, distance_name,
+                          score_var, outcome_label) {
+  model_formula <- stats::as.formula(
+    paste(
+      "distance_object ~",
+      paste(c(score_var, beta_covariates), collapse = " + ")
+    )
+  )
+  environment(model_formula) <- environment()
+
+  set.seed(42)
+  fit <- vegan::adonis2(
+    model_formula,
+    data = cohort_beta,
+    permutations = 9999,
+    by = "margin"
+  )
+
+  cat("\n=== PERMANOVA:", outcome_label, "/", distance_name, "===\n")
+  print(fit)
+
+  list(
+    fit = fit,
+    table = extract_adonis_table(
+      fit, distance_name = distance_name,
+      outcome = outcome_label, score_var = score_var
+    )
+  )
+}
+
+permanova_runs <- list(
+  phq9_bray = run_permanova(
+    bray_distance, "Bray-Curtis", "PHQ9_sum", "Depression (PHQ-9)"
+  ),
+  phq9_aitchison = run_permanova(
+    aitchison_distance, "Aitchison", "PHQ9_sum", "Depression (PHQ-9)"
+  ),
+  gad7_bray = run_permanova(
+    bray_distance, "Bray-Curtis", "GAD7_sum", "Anxiety (GAD-7)"
+  ),
+  gad7_aitchison = run_permanova(
+    aitchison_distance, "Aitchison", "GAD7_sum", "Anxiety (GAD-7)"
+  )
+)
+
+permanova_results <- bind_rows(lapply(permanova_runs, `[[`, "table")) %>%
+  group_by(Outcome, Distance) %>%
+  mutate(Q = p.adjust(P, method = "BH")) %>%
+  ungroup() %>%
+  mutate(Q_global = p.adjust(P, method = "BH"))
+
+data.table::fwrite(
+  permanova_results,
+  file.path(beta_dir, "beta_permanova_results.csv"),
+  na = "NA"
+)
+
+
+# =============================================================================
+# 16. PCoA and beta-dispersion plotting helpers
+# =============================================================================
+
+beta_theme <- theme_classic(base_size = 13) +
+  theme(
+    panel.background = element_rect(fill = "white", colour = NA),
+    plot.background = element_rect(fill = "white", colour = NA),
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.7),
+    axis.line = element_blank(),
+    axis.text = element_text(colour = "black"),
+    plot.title = element_text(face = "bold", size = 13, hjust = 0.5),
+    plot.subtitle = element_text(size = 9.5, hjust = 0.5, colour = "grey30"),
+    legend.title = element_blank(),
+    panel.grid = element_blank()
+  )
+
+beta_sig_symbols <- list(
+  cutpoints = c(0, 0.05, 0.10, 1),
+  symbols = c("*", "#", "ns")
+)
+
+beta_colours <- list(
+  dep_binary = c("Non-depressed" = "#2F9B85", "Depressed" = "#D95F5F"),
+  anx_binary = c("Non-anxious" = "#6FA8DC", "Anxious" = "#E6862D"),
+  dep_three = c("Minimal" = "#2F9B85", "Mild" = "#F5A623", "Moderate+" = "#D95F5F"),
+  anx_three = c("Minimal" = "#6FA8DC", "Mild" = "#F5A623", "Moderate+" = "#E6862D")
+)
+
+get_score_permanova <- function(outcome_label, distance_name, score_var) {
+  row <- permanova_results %>%
+    filter(
+      Outcome == outcome_label,
+      Distance == distance_name,
+      Variable == score_var
+    )
+  stopifnot(nrow(row) == 1L)
+  row
+}
+
+plot_pcoa_beta <- function(distance_object, distance_name, group_var,
+                           colours, title, outcome_label, score_var) {
+  pcoa <- stats::cmdscale(distance_object, k = 2, eig = TRUE, add = TRUE)
+  positive_eigenvalues <- pcoa$eig[pcoa$eig > 0]
+  variance_pct <- 100 * pcoa$eig[1:2] / sum(positive_eigenvalues)
+
+  plot_data <- tibble::tibble(
+    Sample = rownames(pcoa$points),
+    PCoA1 = pcoa$points[, 1],
+    PCoA2 = pcoa$points[, 2],
+    Group = cohort_beta[rownames(pcoa$points), group_var]
+  ) %>%
+    filter(!is.na(Group)) %>%
+    mutate(Group = droplevels(factor(Group)))
+
+  statistic <- get_score_permanova(
+    outcome_label = outcome_label,
+    distance_name = distance_name,
+    score_var = score_var
+  )
+  p_label <- ifelse(
+    statistic$P < 0.001,
+    "P < 0.001",
+    sprintf("P = %.3f", statistic$P)
+  )
+
+  ggplot(plot_data, aes(PCoA1, PCoA2, colour = Group, fill = Group)) +
+    geom_point(size = 2.2, alpha = 0.72) +
+    stat_ellipse(
+      level = 0.95,
+      geom = "polygon",
+      alpha = 0.10,
+      linewidth = 0.8,
+      show.legend = FALSE
+    ) +
+    scale_colour_manual(values = colours, drop = FALSE) +
+    scale_fill_manual(values = colours, drop = FALSE) +
+    labs(
+      x = sprintf("PCoA1 (%.1f%%)", variance_pct[[1]]),
+      y = sprintf("PCoA2 (%.1f%%)", variance_pct[[2]]),
+      title = title,
+      subtitle = sprintf(
+        "Adjusted continuous-score PERMANOVA: R2 = %.4f, %s",
+        statistic$R2, p_label
+      )
+    ) +
+    beta_theme +
+    theme(legend.position = "right")
+}
+
+calculate_dispersion <- function(distance_object, distance_name,
+                                 group_var, analysis_label) {
+  groups <- droplevels(factor(cohort_beta[[group_var]]))
+  names(groups) <- rownames(cohort_beta)
+  keep <- !is.na(groups)
+  sample_ids <- names(groups)[keep]
+  groups <- droplevels(groups[keep])
+  distance_subset <- as.dist(
+    as.matrix(distance_object)[sample_ids, sample_ids, drop = FALSE]
+  )
+
+  dispersion <- vegan::betadisper(distance_subset, groups)
+  set.seed(42)
+  permutation_test <- vegan::permutest(dispersion, permutations = 9999)
+
+  result <- tibble::tibble(
+    Analysis = analysis_label,
+    Group_variable = group_var,
+    Distance = distance_name,
+    n = length(groups),
+    F_stat = unname(permutation_test$tab[1, "F"]),
+    P = unname(permutation_test$tab[1, "Pr(>F)"])
+  )
+
+  plot_data <- tibble::tibble(
+    Sample = names(dispersion$distances),
+    Group = dispersion$group,
+    Distance_to_centroid = dispersion$distances
+  )
+
+  list(test = result, plot_data = plot_data)
+}
+
+plot_dispersion <- function(dispersion_result, colours, title) {
+  plot_data <- dispersion_result$plot_data
+  comparisons <- combn(levels(plot_data$Group), 2, simplify = FALSE)
+
+  ggplot(plot_data, aes(Group, Distance_to_centroid, fill = Group)) +
+    geom_boxplot(width = 0.58, alpha = 0.78, outlier.size = 0.7) +
+    ggpubr::stat_compare_means(
+      comparisons = comparisons,
+      method = "wilcox.test",
+      label = "p.signif",
+      symnum.args = beta_sig_symbols,
+      step.increase = 0.08,
+      size = 4
+    ) +
+    scale_fill_manual(values = colours, drop = FALSE) +
+    labs(
+      x = NULL,
+      y = "Distance to centroid",
+      title = title,
+      subtitle = sprintf(
+        "PERMDISP: F = %.2f, P = %.3f",
+        dispersion_result$test$F_stat,
+        dispersion_result$test$P
+      )
+    ) +
+    beta_theme +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)
+    )
+}
+
+
+# =============================================================================
+# 17. Binary and three-level beta-diversity figures
+# =============================================================================
+
+beta_plot_specs <- list(
+  list(
+    key = "phq9_binary",
+    group_var = "PHQ9_bi10",
+    colours = beta_colours$dep_binary,
+    title = "Depression",
+    outcome = "Depression (PHQ-9)",
+    score_var = "PHQ9_sum",
+    set = "binary"
+  ),
+  list(
+    key = "gad7_binary",
+    group_var = "GAD7_bi10",
+    colours = beta_colours$anx_binary,
+    title = "Anxiety",
+    outcome = "Anxiety (GAD-7)",
+    score_var = "GAD7_sum",
+    set = "binary"
+  ),
+  list(
+    key = "phq9_three",
+    group_var = "dep_sev3",
+    colours = beta_colours$dep_three,
+    title = "Depression severity",
+    outcome = "Depression (PHQ-9)",
+    score_var = "PHQ9_sum",
+    set = "three_level"
+  ),
+  list(
+    key = "gad7_three",
+    group_var = "anx_sev3",
+    colours = beta_colours$anx_three,
+    title = "Anxiety severity",
+    outcome = "Anxiety (GAD-7)",
+    score_var = "GAD7_sum",
+    set = "three_level"
+  )
+)
+
+distance_specs <- list(
+  list(name = "Bray-Curtis", object = bray_distance),
+  list(name = "Aitchison", object = aitchison_distance)
+)
+
+beta_plots <- list()
+dispersion_results <- list()
+
+for (spec in beta_plot_specs) {
+  beta_plots[[spec$key]] <- list()
+  for (distance_spec in distance_specs) {
+    distance_key <- ifelse(distance_spec$name == "Bray-Curtis", "bray", "aitchison")
+
+    dispersion <- calculate_dispersion(
+      distance_object = distance_spec$object,
+      distance_name = distance_spec$name,
+      group_var = spec$group_var,
+      analysis_label = spec$title
+    )
+    dispersion_results[[paste(spec$key, distance_key, sep = "_")]] <- dispersion$test
+
+    beta_plots[[spec$key]][[distance_key]] <- list(
+      pcoa = plot_pcoa_beta(
+        distance_object = distance_spec$object,
+        distance_name = distance_spec$name,
+        group_var = spec$group_var,
+        colours = spec$colours,
+        title = paste(distance_spec$name, "-", spec$title),
+        outcome_label = spec$outcome,
+        score_var = spec$score_var
+      ),
+      dispersion = plot_dispersion(
+        dispersion_result = dispersion,
+        colours = spec$colours,
+        title = paste(distance_spec$name, "dispersion")
+      )
+    )
+  }
+}
+
+beta_dispersion_tests <- bind_rows(dispersion_results) %>%
+  mutate(Q = p.adjust(P, method = "BH"))
+data.table::fwrite(
+  beta_dispersion_tests,
+  file.path(beta_dir, "beta_dispersion_tests.csv"),
+  na = "NA"
+)
+
+p_beta_binary <-
+  (beta_plots$phq9_binary$bray$pcoa |
+     beta_plots$phq9_binary$bray$dispersion |
+     beta_plots$phq9_binary$aitchison$pcoa |
+     beta_plots$phq9_binary$aitchison$dispersion) /
+  (beta_plots$gad7_binary$bray$pcoa |
+     beta_plots$gad7_binary$bray$dispersion |
+     beta_plots$gad7_binary$aitchison$pcoa |
+     beta_plots$gad7_binary$aitchison$dispersion) +
+  plot_layout(widths = c(3, 1.55, 3, 1.55)) +
+  plot_annotation(
+    tag_levels = "A",
+    title = "Beta diversity: binary symptom groups",
+    theme = theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5))
+  )
+
+p_beta_three <-
+  (beta_plots$phq9_three$bray$pcoa |
+     beta_plots$phq9_three$bray$dispersion |
+     beta_plots$phq9_three$aitchison$pcoa |
+     beta_plots$phq9_three$aitchison$dispersion) /
+  (beta_plots$gad7_three$bray$pcoa |
+     beta_plots$gad7_three$bray$dispersion |
+     beta_plots$gad7_three$aitchison$pcoa |
+     beta_plots$gad7_three$aitchison$dispersion) +
+  plot_layout(widths = c(3, 1.55, 3, 1.55)) +
+  plot_annotation(
+    tag_levels = "A",
+    title = "Beta diversity: three-level symptom severity",
+    theme = theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5))
+  )
+
+ggsave(
+  file.path(beta_dir, "beta_diversity_binary.pdf"),
+  p_beta_binary, width = 24, height = 12, device = cairo_pdf, bg = "white"
+)
+ggsave(
+  file.path(beta_dir, "beta_diversity_binary.png"),
+  p_beta_binary, width = 24, height = 12, dpi = 300, bg = "white"
+)
+ggsave(
+  file.path(beta_dir, "beta_diversity_three_level.pdf"),
+  p_beta_three, width = 24, height = 12, device = cairo_pdf, bg = "white"
+)
+ggsave(
+  file.path(beta_dir, "beta_diversity_three_level.png"),
+  p_beta_three, width = 24, height = 12, dpi = 300, bg = "white"
+)
+
+
+# =============================================================================
+# 18. PERMANOVA R2 summary figure and reusable distance objects
+# =============================================================================
+
+permanova_plot_data <- permanova_results %>%
+  mutate(
+    Variable_label = recode(
+      Variable,
+      PHQ9_sum = "PHQ-9",
+      GAD7_sum = "GAD-7",
+      site = "Study site",
+      Age = "Age",
+      Sex = "Sex",
+      BMI = "BMI",
+      hPDI = "hPDI"
+    ),
+    Significance = case_when(
+      P < 0.05 ~ "*",
+      P < 0.10 ~ "#",
+      TRUE ~ ""
+    ),
+    R2_percent = 100 * R2,
+    Distance = factor(Distance, levels = c("Bray-Curtis", "Aitchison")),
+    Outcome = factor(
+      Outcome,
+      levels = c("Depression (PHQ-9)", "Anxiety (GAD-7)")
+    )
+  )
+
+variable_colours <- c(
+  "PHQ-9" = "#E64B35",
+  "GAD-7" = "#E64B35",
+  "Study site" = "#8491B4",
+  "Age" = "#4DBBD5",
+  "Sex" = "#00A087",
+  "BMI" = "#3C5488",
+  "hPDI" = "#F39B7F"
+)
+
+p_permanova_r2 <- ggplot(
+  permanova_plot_data,
+  aes(x = R2_percent, y = reorder(Variable_label, R2_percent),
+      fill = Variable_label)
+) +
+  geom_col(width = 0.66, show.legend = FALSE) +
+  geom_text(
+    aes(label = Significance),
+    hjust = -0.30,
+    size = 4,
+    fontface = "bold"
+  ) +
+  facet_grid(Outcome ~ Distance, scales = "free_y") +
+  scale_fill_manual(values = variable_colours) +
   scale_x_continuous(
-    expand = expansion(mult = c(0, 0.15)),
-    labels = function(x) paste0(x, "%")
+    labels = function(x) paste0(sprintf("%.2f", x), "%"),
+    expand = expansion(mult = c(0, 0.18))
   ) +
   labs(
     x = expression("Explained variance (" * R^2 * ", %)"),
     y = NULL,
-    title = "Proportion of variance in microbial composition\nexplained by host characteristics",
-    subtitle = "PERMANOVA with marginal effects (9,999 permutations)"
+    title = "Variance in microbial composition explained by host characteristics",
+    subtitle = "Adjusted PERMANOVA with marginal effects; 9,999 permutations"
   ) +
-  theme_bw(base_size = 13) +
+  theme_bw(base_size = 12) +
   theme(
-    plot.title         = element_text(face = "bold", size = 14, hjust = 0),
-    plot.subtitle      = element_text(size = 11, color = "grey40", hjust = 0),
-    strip.background   = element_rect(fill = "grey95", color = "grey70"),
-    strip.text         = element_text(face = "bold", size = 11),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0),
+    plot.subtitle = element_text(size = 10, colour = "grey40", hjust = 0),
+    strip.background = element_rect(fill = "grey95", colour = "grey70"),
+    strip.text = element_text(face = "bold"),
     panel.grid.major.y = element_blank(),
-    panel.grid.minor   = element_blank(),
-    axis.text.y        = element_text(size = 11),
-    plot.margin        = margin(10, 15, 10, 10)
+    panel.grid.minor = element_blank()
   )
 
-print(p)
+ggsave(
+  file.path(beta_dir, "beta_permanova_r2.pdf"),
+  p_permanova_r2, width = 10, height = 7, device = cairo_pdf, bg = "white"
+)
+ggsave(
+  file.path(beta_dir, "beta_permanova_r2.png"),
+  p_permanova_r2, width = 10, height = 7, dpi = 300, bg = "white"
+)
 
-
-# ======================================================================
-# ============  microeco 官方接口重做 beta 多样性分析  ==================
-# ======================================================================
-library(microeco)
-library(ggplot2)
-library(patchwork)
-
-# --- 数据导入 ---
-mt <- load_intermediate("mt_ibd.rds")
-mt$tidy_dataset()
-
-# --- 配色 ---
-colors_dep2 <- c("Non-depressed" = "#2F9B85", "Depressed" = "#D95F5F")
-colors_anx2 <- c("Non-anxious" = "#6FA8DC", "Anxious" = "#E6862D")
-colors_dep3 <- c("None" = "#2F9B85", "Mild" = "#F5A623", "Moderate+" = "#D95F5F")
-colors_anx3 <- c("None" = "#6FA8DC", "Mild" = "#F5A623", "Moderate+" = "#E6862D")
-
-# --- 创建分组变量 ---
-# 两组 (binary)
-mt$sample_table$depression <- ifelse(mt$sample_table$PHQ9_bi10 == 1,
-                                     "Depressed", "Non-depressed")
-mt$sample_table$anxiety    <- ifelse(mt$sample_table$GAD7_bi10 == 1,
-                                     "Anxious", "Non-anxious")
-# 三组 (severity)
-mt$sample_table$dep_sev3 <- cut(mt$sample_table$PHQ9_sum,
-                                breaks = c(-Inf, 4, 9, Inf),
-                                labels = c("None", "Mild", "Moderate+"))
-mt$sample_table$anx_sev3 <- cut(mt$sample_table$GAD7_sum,
-                                breaks = c(-Inf, 4, 9, Inf),
-                                labels = c("None", "Mild", "Moderate+"))
-
-# --- 计算 Bray-Curtis 距离 ---
-mt$cal_betadiv(unifrac = FALSE)
-
-# =====================================================================
-# 辅助函数: 对指定分组跑 PCoA + PERMANOVA + group distance boxplot
-# =====================================================================
-run_beta_microeco <- function(mt_obj, group_col, colors, title_prefix) {
-
-  tb <- trans_beta$new(dataset = mt_obj, group = group_col, measure = "bray")
-
-  # --- PERMANOVA ---
-  tb$cal_manova(manova_all = TRUE, p_adjust_method = "fdr")
-  cat("\n===", title_prefix, "PERMANOVA ===\n")
-  print(tb$res_manova)
-
-  perm_row <- tb$res_manova[group_col, ]
-  r2_val   <- perm_row$R2
-  p_val    <- perm_row$`Pr(>F)`
-  p_text   <- if (p_val < 0.001) "P < 0.001" else sprintf("P = %.3f", p_val)
-  anno_lab <- sprintf("PERMANOVA: R² = %.4f, %s", r2_val, p_text)
-
-  # --- PCoA + PERMANOVA 注释 ---
-  tb$cal_ordination(ordination = "PCoA")
-  p_pcoa <- tb$plot_ordination(plot_color = group_col, plot_shape = group_col,
-                               plot_type = c("point", "ellipse")) +
-    scale_color_manual(values = colors) +
-    scale_fill_manual(values = colors) +
-    annotate("text", x = Inf, y = Inf, label = anno_lab,
-             hjust = 1.05, vjust = 1.5, size = 4.2, fontface = "italic") +
-    labs(title = paste(title_prefix, "— PCoA (Bray-Curtis)")) +
-    theme_classic(base_size = 14) +
-    theme(
-      panel.border = element_rect(colour = "black", fill = NA, linewidth = 1.0),
-      axis.line = element_blank(),
-      plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
-      legend.position = "right"
+saveRDS(
+  list(
+    bray_curtis = bray_distance,
+    aitchison = aitchison_distance,
+    cohort = cohort_beta,
+    permanova = permanova_results,
+    dispersion = beta_dispersion_tests,
+    parameters = list(
+      permutations = 9999L,
+      seed = 42L,
+      pseudocount = half_minimum,
+      sample_n = nrow(cohort_beta),
+      species_n = ncol(species_beta),
+      source = "microbiome/mt_ibd_282.rds"
     )
+  ),
+  file.path(beta_dir, "beta_diversity_objects.rds")
+)
 
-  # --- Beta dispersion ---
-  tb$cal_betadisper()
-  cat("\n===", title_prefix, "Betadisper ===\n")
-  print(tb$res_betadisper)
-
-  # --- Group distance boxplot + 组间显著性 ---
-  tb$cal_group_distance(within_group = TRUE)
-
-  grp_lvls <- levels(factor(mt_obj$sample_table[[group_col]]))
-  comps    <- combn(grp_lvls, 2, simplify = FALSE)
-
-  p_dist <- tb$plot_group_distance(distance_pair_stat = FALSE) +
-    stat_compare_means(comparisons = comps, method = "wilcox.test",
-                       label = "p.signif", size = 4.5, step.increase = 0.08) +
-    scale_fill_manual(values = colors) +
-    scale_color_manual(values = colors) +
-    labs(title = paste(title_prefix, "— Bray-Curtis Distance"),
-         y = "Bray-Curtis distance") +
-    theme_classic(base_size = 14) +
-    theme(
-      panel.border = element_rect(colour = "black", fill = NA, linewidth = 1.0),
-      axis.line = element_blank(),
-      plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
-      axis.text.x = element_text(size = 12, angle = 45, hjust = 1, vjust = 1),
-      legend.position = "none"
-    )
-
-  list(pcoa = p_pcoa, dist = p_dist, tb = tb)
-}
-
-# =====================================================================
-# 1. 两组比较
-# =====================================================================
-res_dep2 <- run_beta_microeco(mt, "depression", colors_dep2, "Depression")
-res_anx2 <- run_beta_microeco(mt, "anxiety",    colors_anx2, "Anxiety")
-
-p_2grp_me <- (res_dep2$pcoa | res_dep2$dist) /
-             (res_anx2$pcoa | res_anx2$dist) +
-  plot_layout(widths = c(3, 1.5)) +
-  plot_annotation(tag_levels = "A")
-
-print(p_2grp_me)
-ggsave("results/group_meeting/add/beta_microeco_2group.pdf", p_2grp_me,
-       width = 16, height = 14)
-
-# =====================================================================
-# 2. 三组比较 (severity)
-# =====================================================================
-res_dep3 <- run_beta_microeco(mt, "dep_sev3", colors_dep3, "Depression Severity")
-res_anx3 <- run_beta_microeco(mt, "anx_sev3", colors_anx3, "Anxiety Severity")
-
-p_3grp_me <- (res_dep3$pcoa | res_dep3$dist) /
-             (res_anx3$pcoa | res_anx3$dist) +
-  plot_layout(widths = c(3, 1.5)) +
-  plot_annotation(tag_levels = "A")
-
-print(p_3grp_me)
-ggsave("results/group_meeting/add/beta_microeco_3group_severity.pdf", p_3grp_me,
-       width = 16, height = 14)
+cat("\n=== Beta diversity analysis completed ===\n")
+cat("Output:", normalizePath(beta_dir), "\n")
