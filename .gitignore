@@ -1,0 +1,38 @@
+# macOS / editor state
+.DS_Store
+**/.DS_Store
+*~
+*.swp
+.vscode/
+.idea/
+
+# R session and project-local state
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# Python cache / local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated analysis outputs
+results/
+Rplots.pdf
+*.pdf
+*.png
+*.svg
+
+# Local analysis data: keep code and the small provenance manifest in Git,
+# but do not version participant-level or assay data.
+metadata/
+microbiome/
+metabolomics/
+paired_ibd_250.csv
+
+# Temporary files and logs
+*.log
+*.tmp
+*.temp
